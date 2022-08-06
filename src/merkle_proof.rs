@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use near_primitives::{
     hash::CryptoHash,
-    merkle::{Direction, MerklePath},
+    merkle::{self, Direction, MerklePath},
 };
 
 type Level = usize;
@@ -68,44 +68,56 @@ impl MerklePathWrapper {
             return CryptoHash::default();
         }
 
-        let mut current_depth = self.inner.len();
         let (_, node_coordinates_to_calculate) = self.get_node_coordinates();
+
         let nodes_to_calculate = node_coordinates_to_calculate.len();
-        self.inner.iter().enumerate().fold(
-            CryptoHash::default(),
-            |mut hash, (item_idx, merkle_path_item)| {
-                current_depth -= 1;
-                match current_depth {
-                    cd if cd == self.inner.len() - 1 => match merkle_path_item.direction {
-                        Direction::Left => {
-                            hash = CryptoHash::hash_borsh(&(hash, merkle_path_item.hash))
-                        }
-                        Direction::Right => {
-                            hash = CryptoHash::hash_borsh(&(merkle_path_item.hash, hash))
-                        }
-                    },
-                    _ => {
-                        dbg!(&item_idx);
-                        let NodeCoordinates { level, index, .. } =
-                            &node_coordinates_to_calculate[nodes_to_calculate - item_idx];
-                        if let Some(cached_hash) = cached_nodes.inner.get(&(*level, *index)) {
-                            hash = *cached_hash;
-                        } else {
-                            match merkle_path_item.direction {
-                                Direction::Left => {
-                                    hash = CryptoHash::hash_borsh(&(hash, merkle_path_item.hash))
-                                }
-                                Direction::Right => {
-                                    hash = CryptoHash::hash_borsh(&(merkle_path_item.hash, hash))
-                                }
+        dbg!(&node_coordinates_to_calculate);
+        self.inner
+            .iter()
+            .enumerate()
+            .fold(item, |mut hash, (item_idx, merkle_path_item)| {
+                let NodeCoordinates { index, level, .. } =
+                    &node_coordinates_to_calculate[nodes_to_calculate - item_idx - 1];
+
+                let cached_value = cached_nodes.inner.get(&(*level, *index));
+                match cached_value {
+                    None => {
+                        match merkle_path_item.direction {
+                            Direction::Left => {
+                                hash = CryptoHash::hash_borsh(&(merkle_path_item.hash, hash))
                             }
-                            cached_nodes.inner.insert((*level, *index), hash);
-                        }
+                            Direction::Right => {
+                                hash = CryptoHash::hash_borsh(&(hash, merkle_path_item.hash))
+                            }
+                        };
+                        // update the cache
+                        cached_nodes.inner.insert((*level, *index), hash);
+                        ()
+                    }
+                    Some(cached_value) => {
+                        hash = *cached_value;
                     }
                 }
+
+                // _ => {
+                // let NodeCoordinates { level, index, .. } =
+                //     &node_coordinates_to_calculate[nodes_to_calculate - item_idx];
+                // if let Some(cached_hash) = cached_nodes.inner.get(&(*level, *index)) {
+                //     hash = *cached_hash;
+                // } else {
+                // match merkle_path_item.direction {
+                //     Direction::Left => {
+                //         hash = CryptoHash::hash_borsh(&(hash, merkle_path_item.hash))
+                //     }
+                //     Direction::Right => {
+                //         hash = CryptoHash::hash_borsh(&(merkle_path_item.hash, hash))
+                //     }
+                // }
+                // cached_nodes.inner.insert((*level, *index), hash);
+                // }
+                // }
                 hash
-            },
-        )
+            })
     }
 
     pub fn update_cache(&self, cache: &mut CachedNodes) {
@@ -131,6 +143,12 @@ impl MerklePathWrapper {
                     depth += 1;
                     match depth {
                         1 => {
+                            node_coordinates_to_calculate.push(NodeCoordinates {
+                                index: 0,
+                                level: 0,
+                                hash: None,
+                            });
+
                             match el.direction {
                                 Direction::Left => {
                                     idx_to_calculate = 1;
@@ -251,7 +269,11 @@ mod tests {
                             hash: Some(CryptoHash::default()),
                         },
                     ],
-                    node_coordinates_to_calculate: vec![],
+                    node_coordinates_to_calculate: vec![NodeCoordinates {
+                        index: 0,
+                        level: 0,
+                        hash: None,
+                    }],
                 }),
             ),
             (
@@ -288,11 +310,18 @@ mod tests {
                             hash: Some(CryptoHash::default()),
                         },
                     ],
-                    node_coordinates_to_calculate: vec![NodeCoordinates {
-                        index: 0,
-                        level: 1,
-                        hash: None,
-                    }],
+                    node_coordinates_to_calculate: vec![
+                        NodeCoordinates {
+                            index: 0,
+                            level: 0,
+                            hash: None,
+                        },
+                        NodeCoordinates {
+                            index: 0,
+                            level: 1,
+                            hash: None,
+                        },
+                    ],
                 }),
             ),
             (
@@ -329,11 +358,18 @@ mod tests {
                             hash: Some(CryptoHash::default()),
                         },
                     ],
-                    node_coordinates_to_calculate: vec![NodeCoordinates {
-                        index: 0,
-                        level: 1,
-                        hash: None,
-                    }],
+                    node_coordinates_to_calculate: vec![
+                        NodeCoordinates {
+                            index: 0,
+                            level: 0,
+                            hash: None,
+                        },
+                        NodeCoordinates {
+                            index: 0,
+                            level: 1,
+                            hash: None,
+                        },
+                    ],
                 }),
             ),
             (
@@ -370,11 +406,18 @@ mod tests {
                             hash: Some(CryptoHash::default()),
                         },
                     ],
-                    node_coordinates_to_calculate: vec![NodeCoordinates {
-                        index: 1,
-                        level: 1,
-                        hash: None,
-                    }],
+                    node_coordinates_to_calculate: vec![
+                        NodeCoordinates {
+                            index: 0,
+                            level: 0,
+                            hash: None,
+                        },
+                        NodeCoordinates {
+                            index: 1,
+                            level: 1,
+                            hash: None,
+                        },
+                    ],
                 }),
             ),
             (
@@ -422,6 +465,11 @@ mod tests {
                     ],
                     node_coordinates_to_calculate: vec![
                         NodeCoordinates {
+                            index: 0,
+                            level: 0,
+                            hash: None,
+                        },
+                        NodeCoordinates {
                             index: 1,
                             level: 1,
                             hash: None,
@@ -478,6 +526,11 @@ mod tests {
                         },
                     ],
                     node_coordinates_to_calculate: vec![
+                        NodeCoordinates {
+                            index: 0,
+                            level: 0,
+                            hash: None,
+                        },
                         NodeCoordinates {
                             index: 0,
                             level: 1,
@@ -537,6 +590,11 @@ mod tests {
                     node_coordinates_to_calculate: vec![
                         NodeCoordinates {
                             index: 0,
+                            level: 0,
+                            hash: None,
+                        },
+                        NodeCoordinates {
+                            index: 0,
                             level: 1,
                             hash: None,
                         },
@@ -564,14 +622,18 @@ mod tests {
         assert_eq!(compute_root_from_path_and_item(mp2, &2), root_hash);
 
         let merkle_proof = merkle_proofs[0].clone();
+        let merkle_proof2 = merkle_proofs[1].clone();
         let wrapper = MerklePathWrapper::new(merkle_proof);
-        dbg!(&wrapper);
+        let wrapper2 = MerklePathWrapper::new(merkle_proof2);
         let mut cached_nodes = CachedNodes::new();
         wrapper.update_cache(&mut cached_nodes);
 
-        dbg!(&cached_nodes);
         assert_eq!(
             wrapper.calculate_root_hash(CryptoHash::hash_borsh(&1), &mut cached_nodes),
+            root_hash
+        );
+        assert_eq!(
+            wrapper2.calculate_root_hash(CryptoHash::hash_borsh(&2), &mut cached_nodes),
             root_hash
         );
         dbg!(&cached_nodes);
