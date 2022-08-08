@@ -9,6 +9,16 @@ type Level = usize;
 type Index = usize;
 type LeafIndex = usize;
 
+/// ProofBatchVerifier verifies merkle proofs and maintains a cache
+/// of intermediate computations to avoid having to spend too many
+/// CPU cycles in vain.
+///
+/// ## Note: it's important that all the proofs belong to the same shard.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ProofBatchVerifier {
+    cached_nodes: CachedNodes,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct NodeCoordinates {
     index: usize,
@@ -17,25 +27,20 @@ pub struct NodeCoordinates {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct MerklePathWrapper {
-    inner: MerklePath,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct CachedNodes {
+struct CachedNodes {
     inner: BTreeMap<(Level, Index), CryptoHash>,
     path_item_cache_mapping: HashMap<LeafIndex, Vec<(Level, Index)>>,
 }
 
 impl CachedNodes {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             inner: BTreeMap::new(),
             path_item_cache_mapping: HashMap::new(),
         }
     }
 
-    pub fn extend_from_given(&mut self, given_nodes: &[NodeCoordinates], leaf_index: LeafIndex) {
+    fn extend_from_given(&mut self, given_nodes: &[NodeCoordinates], leaf_index: LeafIndex) {
         if given_nodes.len() == 0 {
             return;
         }
@@ -55,30 +60,59 @@ impl CachedNodes {
     }
 }
 
-impl MerklePathWrapper {
-    pub fn new(inner: MerklePath) -> Self {
-        Self { inner }
+impl ProofBatchVerifier {
+    pub fn new() -> Self {
+        Self {
+            cached_nodes: CachedNodes::new(),
+        }
     }
-    pub fn calculate_root_hash(
-        &self,
-        item: CryptoHash,
-        cached_nodes: &mut CachedNodes,
-    ) -> CryptoHash {
-        if self.inner.len() == 0 {
+
+    /// Computes the root hash of a given merkle proof and item hash
+    /// It will update the cache of intermediate nodes so that they do not have
+    /// to be recomputed
+    pub fn calculate_root_hash(&mut self, proof: &MerklePath, item_hash: CryptoHash) -> CryptoHash {
+        // trivial example, where proof is empty
+        if proof.len() == 0 {
             return CryptoHash::default();
         }
 
-        let (_, node_coordinates_to_calculate) = self.get_node_coordinates();
-
+        // the first element is somewhat different, since the caller is passing the item's hash
+        let (_, node_coordinates_to_calculate) = self.get_node_coordinates(proof);
         let nodes_to_calculate = node_coordinates_to_calculate.len();
-        self.inner
+
+        let sibling_item = &proof[0];
+
+        // calculate the hash for the leaf level by hashing the item_hash given and its sibling (provided in the proof)
+        let hash = match sibling_item.direction {
+            Direction::Left => CryptoHash::hash_borsh(&(sibling_item.hash, item_hash)),
+            Direction::Right => CryptoHash::hash_borsh(&(item_hash, sibling_item.hash)),
+        };
+
+        let NodeCoordinates { index, level, .. } =
+            &node_coordinates_to_calculate[nodes_to_calculate - 0 - 1];
+        let cached_value = self.cached_nodes.inner.get(&(*level, *index));
+
+        match cached_value {
+            None => {
+                self.cached_nodes.inner.insert((*level, *index), hash);
+            }
+            Some(parent_hash) => {
+                // ensure that, if the value was cached it matches the calculation made above
+                // this is important, otherwise when most of the intermediates nodes are cached, if this check
+                // is not made, a wrong proof could be passed and stil "yield" the right root hash
+                assert_eq!(parent_hash, &hash);
+            }
+        }
+
+        proof
             .iter()
             .enumerate()
-            .fold(item, |mut hash, (item_idx, merkle_path_item)| {
+            .skip(1) // skip the parent
+            .fold(hash, |mut hash, (item_idx, merkle_path_item)| {
                 let NodeCoordinates { index, level, .. } =
                     &node_coordinates_to_calculate[nodes_to_calculate - item_idx - 1];
 
-                let cached_value = cached_nodes.inner.get(&(*level, *index));
+                let cached_value = self.cached_nodes.inner.get(&(*level, *index));
                 match cached_value {
                     None => {
                         match merkle_path_item.direction {
@@ -90,7 +124,7 @@ impl MerklePathWrapper {
                             }
                         };
                         // update the cache
-                        cached_nodes.inner.insert((*level, *index), hash);
+                        self.cached_nodes.inner.insert((*level, *index), hash);
                     }
                     Some(cached_value) => {
                         hash = *cached_value;
@@ -101,15 +135,22 @@ impl MerklePathWrapper {
             })
     }
 
-    pub fn update_cache(&self, cache: &mut CachedNodes) {
-        let (given_nodes, _) = self.get_node_coordinates();
-        let leaf_index = given_nodes.last().unwrap().index;
-        cache.extend_from_given(&given_nodes[0..(given_nodes.len() - 1)], leaf_index);
+    /// Updates the cache with all the values that are given on a merkle proof
+    pub fn update_cache<'a>(&mut self, proofs: impl Iterator<Item = &'a MerklePath>) {
+        proofs.for_each(|proof| {
+            let (given_nodes, _) = self.get_node_coordinates(proof);
+            let leaf_index = given_nodes.last().unwrap().index;
+            self.cached_nodes
+                .extend_from_given(&given_nodes[0..(given_nodes.len() - 1)], leaf_index);
+        });
     }
 
-    fn get_node_coordinates(&self) -> (Vec<NodeCoordinates>, Vec<NodeCoordinates>) {
-        let tree_depth = self.inner.len();
-        self.inner
+    pub fn get_node_coordinates(
+        &self,
+        proof: &MerklePath,
+    ) -> (Vec<NodeCoordinates>, Vec<NodeCoordinates>) {
+        let tree_depth = proof.len();
+        proof
             .iter()
             .rev()
             .fold(
@@ -231,12 +272,10 @@ mod tests {
     fn test_get_nodes_to_be_calculated() {
         let cases = vec![
             (
-                MerklePathWrapper {
-                    inner: vec![MerklePathItem {
-                        direction: Direction::Left,
-                        hash: CryptoHash::default(),
-                    }],
-                },
+                vec![MerklePathItem {
+                    direction: Direction::Left,
+                    hash: CryptoHash::default(),
+                }],
                 (ExpectedResult {
                     node_coordinates_given: vec![
                         NodeCoordinates {
@@ -258,21 +297,19 @@ mod tests {
                 }),
             ),
             (
-                MerklePathWrapper {
-                    inner: vec![
-                        MerklePathItem {
-                            direction: Direction::Right,
-                            hash: CryptoHash::default(),
-                        },
-                        MerklePathItem {
-                            direction: Direction::Left,
-                            hash: CryptoHash::default(),
-                        },
-                    ]
-                    .into_iter()
-                    .rev()
-                    .collect(),
-                },
+                vec![
+                    MerklePathItem {
+                        direction: Direction::Right,
+                        hash: CryptoHash::default(),
+                    },
+                    MerklePathItem {
+                        direction: Direction::Left,
+                        hash: CryptoHash::default(),
+                    },
+                ]
+                .into_iter()
+                .rev()
+                .collect(),
                 (ExpectedResult {
                     node_coordinates_given: vec![
                         NodeCoordinates {
@@ -306,21 +343,19 @@ mod tests {
                 }),
             ),
             (
-                MerklePathWrapper {
-                    inner: vec![
-                        MerklePathItem {
-                            direction: Direction::Right,
-                            hash: CryptoHash::default(),
-                        },
-                        MerklePathItem {
-                            direction: Direction::Right,
-                            hash: CryptoHash::default(),
-                        },
-                    ]
-                    .into_iter()
-                    .rev()
-                    .collect(),
-                },
+                vec![
+                    MerklePathItem {
+                        direction: Direction::Right,
+                        hash: CryptoHash::default(),
+                    },
+                    MerklePathItem {
+                        direction: Direction::Right,
+                        hash: CryptoHash::default(),
+                    },
+                ]
+                .into_iter()
+                .rev()
+                .collect(),
                 (ExpectedResult {
                     node_coordinates_given: vec![
                         NodeCoordinates {
@@ -354,21 +389,19 @@ mod tests {
                 }),
             ),
             (
-                MerklePathWrapper {
-                    inner: vec![
-                        MerklePathItem {
-                            direction: Direction::Left,
-                            hash: CryptoHash::default(),
-                        },
-                        MerklePathItem {
-                            direction: Direction::Right,
-                            hash: CryptoHash::default(),
-                        },
-                    ]
-                    .into_iter()
-                    .rev()
-                    .collect(),
-                },
+                vec![
+                    MerklePathItem {
+                        direction: Direction::Left,
+                        hash: CryptoHash::default(),
+                    },
+                    MerklePathItem {
+                        direction: Direction::Right,
+                        hash: CryptoHash::default(),
+                    },
+                ]
+                .into_iter()
+                .rev()
+                .collect(),
                 (ExpectedResult {
                     node_coordinates_given: vec![
                         NodeCoordinates {
@@ -402,25 +435,23 @@ mod tests {
                 }),
             ),
             (
-                MerklePathWrapper {
-                    inner: vec![
-                        MerklePathItem {
-                            direction: Direction::Left,
-                            hash: CryptoHash::default(),
-                        },
-                        MerklePathItem {
-                            direction: Direction::Right,
-                            hash: CryptoHash::default(),
-                        },
-                        MerklePathItem {
-                            direction: Direction::Right,
-                            hash: CryptoHash::default(),
-                        },
-                    ]
-                    .into_iter()
-                    .rev()
-                    .collect(),
-                },
+                vec![
+                    MerklePathItem {
+                        direction: Direction::Left,
+                        hash: CryptoHash::default(),
+                    },
+                    MerklePathItem {
+                        direction: Direction::Right,
+                        hash: CryptoHash::default(),
+                    },
+                    MerklePathItem {
+                        direction: Direction::Right,
+                        hash: CryptoHash::default(),
+                    },
+                ]
+                .into_iter()
+                .rev()
+                .collect(),
                 (ExpectedResult {
                     node_coordinates_given: vec![
                         NodeCoordinates {
@@ -464,25 +495,23 @@ mod tests {
                 }),
             ),
             (
-                MerklePathWrapper {
-                    inner: vec![
-                        MerklePathItem {
-                            direction: Direction::Right,
-                            hash: CryptoHash::default(),
-                        },
-                        MerklePathItem {
-                            direction: Direction::Right,
-                            hash: CryptoHash::default(),
-                        },
-                        MerklePathItem {
-                            direction: Direction::Right,
-                            hash: CryptoHash::default(),
-                        },
-                    ]
-                    .into_iter()
-                    .rev()
-                    .collect(),
-                },
+                vec![
+                    MerklePathItem {
+                        direction: Direction::Right,
+                        hash: CryptoHash::default(),
+                    },
+                    MerklePathItem {
+                        direction: Direction::Right,
+                        hash: CryptoHash::default(),
+                    },
+                    MerklePathItem {
+                        direction: Direction::Right,
+                        hash: CryptoHash::default(),
+                    },
+                ]
+                .into_iter()
+                .rev()
+                .collect(),
                 (ExpectedResult {
                     node_coordinates_given: vec![
                         NodeCoordinates {
@@ -526,25 +555,23 @@ mod tests {
                 }),
             ),
             (
-                MerklePathWrapper {
-                    inner: vec![
-                        MerklePathItem {
-                            direction: Direction::Right,
-                            hash: CryptoHash::default(),
-                        },
-                        MerklePathItem {
-                            direction: Direction::Right,
-                            hash: CryptoHash::default(),
-                        },
-                        MerklePathItem {
-                            direction: Direction::Left,
-                            hash: CryptoHash::default(),
-                        },
-                    ]
-                    .into_iter()
-                    .rev()
-                    .collect(),
-                },
+                vec![
+                    MerklePathItem {
+                        direction: Direction::Right,
+                        hash: CryptoHash::default(),
+                    },
+                    MerklePathItem {
+                        direction: Direction::Right,
+                        hash: CryptoHash::default(),
+                    },
+                    MerklePathItem {
+                        direction: Direction::Left,
+                        hash: CryptoHash::default(),
+                    },
+                ]
+                .into_iter()
+                .rev()
+                .collect(),
                 (ExpectedResult {
                     node_coordinates_given: vec![
                         NodeCoordinates {
@@ -589,34 +616,78 @@ mod tests {
             ),
         ];
 
-        for (mp, expected_result) in cases {
-            assert_eq!(mp.get_node_coordinates(), expected_result.into());
+        let verifier = ProofBatchVerifier::new();
+        for (ref mp, expected_result) in cases {
+            assert_eq!(verifier.get_node_coordinates(mp), expected_result.into());
         }
     }
 
     #[test]
-    fn test_merklelize() {
-        let (root_hash, merkle_proofs) = merklize(&[1, 2, 3, 4, 5]);
+    fn test_calculate_root_hash() {
+        let elements = &[1, 2, 3, 4, 5];
+        let (root_hash, merkle_proofs) = merklize(elements);
         let mp = &merkle_proofs[0];
         let mp2 = &merkle_proofs[1];
         assert_eq!(compute_root_from_path_and_item(mp, &1), root_hash);
         assert_eq!(compute_root_from_path_and_item(mp2, &2), root_hash);
 
-        let merkle_proof = merkle_proofs[0].clone();
-        let merkle_proof2 = merkle_proofs[1].clone();
-        let wrapper = MerklePathWrapper::new(merkle_proof);
-        let wrapper2 = MerklePathWrapper::new(merkle_proof2);
-        let mut cached_nodes = CachedNodes::new();
-        wrapper.update_cache(&mut cached_nodes);
+        let mut verifier = ProofBatchVerifier::new();
 
+        for (idx, element) in elements.iter().enumerate() {
+            let merkle_proof = &merkle_proofs[idx];
+            assert_eq!(
+                verifier.calculate_root_hash(merkle_proof, CryptoHash::hash_borsh(element)),
+                root_hash
+            );
+        }
+
+        // try with cache updated
+        verifier.update_cache(merkle_proofs.iter());
+        for (idx, element) in elements.iter().enumerate() {
+            let merkle_proof = &merkle_proofs[idx];
+            assert_eq!(
+                verifier.calculate_root_hash(merkle_proof, CryptoHash::hash_borsh(element)),
+                root_hash
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_calculate_root_hash_wrong_items() {
+        let elements = &[1, 2, 3, 4, 5];
+        let (root_hash, merkle_proofs) = merklize(elements);
+        let mp = &merkle_proofs[0];
+        let mp2 = &merkle_proofs[1];
+        assert_eq!(compute_root_from_path_and_item(mp, &1), root_hash);
+        assert_eq!(compute_root_from_path_and_item(mp2, &2), root_hash);
+
+        let mut verifier = ProofBatchVerifier::new();
+        let merkle_proof = &merkle_proofs[0];
         assert_eq!(
-            wrapper.calculate_root_hash(CryptoHash::hash_borsh(&1), &mut cached_nodes),
+            verifier.calculate_root_hash(merkle_proof, CryptoHash::hash_borsh(&2)),
             root_hash
         );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_calculate_root_hash_wrong_items_with_loaded_cache() {
+        let elements = &[1, 2, 3, 4, 5];
+        let (root_hash, merkle_proofs) = merklize(elements);
+        let mp = &merkle_proofs[0];
+        let mp2 = &merkle_proofs[1];
+        assert_eq!(compute_root_from_path_and_item(mp, &1), root_hash);
+        assert_eq!(compute_root_from_path_and_item(mp2, &2), root_hash);
+
+        let mut verifier = ProofBatchVerifier::new();
+        // try with cache updated
+        verifier.update_cache(merkle_proofs.iter());
+
+        let merkle_proof = &merkle_proofs[0];
         assert_eq!(
-            wrapper2.calculate_root_hash(CryptoHash::hash_borsh(&2), &mut cached_nodes),
+            verifier.calculate_root_hash(merkle_proof, CryptoHash::hash_borsh(&2)),
             root_hash
         );
-        dbg!(&cached_nodes);
     }
 }
