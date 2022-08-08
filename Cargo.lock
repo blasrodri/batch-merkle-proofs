@@ -47,7 +47,9 @@ checksum = "b41b7ea54a0c9d92199de89e20e58d49f02f8e699814ef3fdf266f6f748d15c7"
 name = "batch-merkle-proofs"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "near-primitives",
+ "sha2 0.10.2",
 ]
 
 [[package]]

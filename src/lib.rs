@@ -4,7 +4,13 @@
 //! The purpose of this create is to allow light clients to verify proofs in batches.
 //!
 
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    marker::PhantomData,
+};
+mod host_functions;
+use borsh::BorshSerialize;
+use host_functions::HostFunctions;
 
 use near_primitives::{
     hash::CryptoHash,
@@ -21,8 +27,9 @@ type LeafIndex = usize;
 ///
 /// ## Note: it's important that all the proofs belong to the same shard.
 #[derive(Debug, PartialEq, Eq)]
-pub struct ProofBatchVerifier {
+pub struct ProofBatchVerifier<HF: HostFunctions> {
     cached_nodes: CachedNodes,
+    _hf: PhantomData<HF>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -66,10 +73,11 @@ impl CachedNodes {
     }
 }
 
-impl ProofBatchVerifier {
+impl<HF: HostFunctions> ProofBatchVerifier<HF> {
     pub fn new() -> Self {
         Self {
             cached_nodes: CachedNodes::new(),
+            _hf: PhantomData::default(),
         }
     }
 
@@ -90,8 +98,8 @@ impl ProofBatchVerifier {
 
         // calculate the hash for the leaf level by hashing the item_hash given and its sibling (provided in the proof)
         let hash = match sibling_item.direction {
-            Direction::Left => CryptoHash::hash_borsh(&(sibling_item.hash, item_hash)),
-            Direction::Right => CryptoHash::hash_borsh(&(item_hash, sibling_item.hash)),
+            Direction::Left => hash_borsh::<_, HF>(&(sibling_item.hash, item_hash)),
+            Direction::Right => hash_borsh::<_, HF>(&(item_hash, sibling_item.hash)),
         };
 
         let NodeCoordinates { index, level, .. } =
@@ -257,6 +265,11 @@ impl ProofBatchVerifier {
     }
 }
 
+fn hash_borsh<T: BorshSerialize, HF: HostFunctions>(items: &(T, T)) -> CryptoHash {
+    let serialized = items.try_to_vec().unwrap();
+    CryptoHash(HF::sha256(&serialized))
+}
+
 #[cfg(test)]
 mod tests {
     use near_primitives::merkle::{compute_root_from_path_and_item, merklize, MerklePathItem};
@@ -271,6 +284,14 @@ mod tests {
     impl From<ExpectedResult> for (Vec<NodeCoordinates>, Vec<NodeCoordinates>) {
         fn from(e: ExpectedResult) -> Self {
             (e.node_coordinates_given, e.node_coordinates_to_calculate)
+        }
+    }
+
+    struct MockedHostFunctions;
+    impl HostFunctions for MockedHostFunctions {
+        fn sha256(data: &[u8]) -> [u8; 32] {
+            use sha2::Digest;
+            sha2::Sha256::digest(data).try_into().unwrap()
         }
     }
 
@@ -622,7 +643,7 @@ mod tests {
             ),
         ];
 
-        let verifier = ProofBatchVerifier::new();
+        let verifier = ProofBatchVerifier::<MockedHostFunctions>::new();
         for (ref mp, expected_result) in cases {
             assert_eq!(verifier.get_node_coordinates(mp), expected_result.into());
         }
@@ -637,7 +658,7 @@ mod tests {
         assert_eq!(compute_root_from_path_and_item(mp, &1), root_hash);
         assert_eq!(compute_root_from_path_and_item(mp2, &2), root_hash);
 
-        let mut verifier = ProofBatchVerifier::new();
+        let mut verifier = ProofBatchVerifier::<MockedHostFunctions>::new();
 
         for (idx, element) in elements.iter().enumerate() {
             let merkle_proof = &merkle_proofs[idx];
@@ -668,7 +689,7 @@ mod tests {
         assert_eq!(compute_root_from_path_and_item(mp, &1), root_hash);
         assert_eq!(compute_root_from_path_and_item(mp2, &2), root_hash);
 
-        let mut verifier = ProofBatchVerifier::new();
+        let mut verifier = ProofBatchVerifier::<MockedHostFunctions>::new();
         let merkle_proof = &merkle_proofs[0];
         assert_eq!(
             verifier.calculate_root_hash(merkle_proof, CryptoHash::hash_borsh(&2)),
@@ -686,7 +707,7 @@ mod tests {
         assert_eq!(compute_root_from_path_and_item(mp, &1), root_hash);
         assert_eq!(compute_root_from_path_and_item(mp2, &2), root_hash);
 
-        let mut verifier = ProofBatchVerifier::new();
+        let mut verifier = ProofBatchVerifier::<MockedHostFunctions>::new();
         // try with cache updated
         verifier.update_cache(merkle_proofs.iter());
 
