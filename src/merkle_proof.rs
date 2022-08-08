@@ -71,7 +71,6 @@ impl MerklePathWrapper {
         let (_, node_coordinates_to_calculate) = self.get_node_coordinates();
 
         let nodes_to_calculate = node_coordinates_to_calculate.len();
-        dbg!(&node_coordinates_to_calculate);
         self.inner
             .iter()
             .enumerate()
@@ -92,30 +91,12 @@ impl MerklePathWrapper {
                         };
                         // update the cache
                         cached_nodes.inner.insert((*level, *index), hash);
-                        ()
                     }
                     Some(cached_value) => {
                         hash = *cached_value;
                     }
                 }
 
-                // _ => {
-                // let NodeCoordinates { level, index, .. } =
-                //     &node_coordinates_to_calculate[nodes_to_calculate - item_idx];
-                // if let Some(cached_hash) = cached_nodes.inner.get(&(*level, *index)) {
-                //     hash = *cached_hash;
-                // } else {
-                // match merkle_path_item.direction {
-                //     Direction::Left => {
-                //         hash = CryptoHash::hash_borsh(&(hash, merkle_path_item.hash))
-                //     }
-                //     Direction::Right => {
-                //         hash = CryptoHash::hash_borsh(&(merkle_path_item.hash, hash))
-                //     }
-                // }
-                // cached_nodes.inner.insert((*level, *index), hash);
-                // }
-                // }
                 hash
             })
     }
