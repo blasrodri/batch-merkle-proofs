@@ -4,10 +4,12 @@
 //! The purpose of this create is to allow light clients to verify proofs in batches.
 //!
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    marker::PhantomData,
-};
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate no_std_compat as std;
+
+use core::marker::PhantomData;
+use std::{collections::HashMap, vec::Vec};
 mod host_functions;
 use borsh::BorshSerialize;
 use host_functions::HostFunctions;
@@ -41,14 +43,14 @@ pub struct NodeCoordinates {
 
 #[derive(Debug, PartialEq, Eq)]
 struct CachedNodes {
-    inner: BTreeMap<(Level, Index), CryptoHash>,
+    inner: HashMap<(Level, Index), CryptoHash>,
     path_item_cache_mapping: HashMap<LeafIndex, Vec<(Level, Index)>>,
 }
 
 impl CachedNodes {
     fn new() -> Self {
         Self {
-            inner: BTreeMap::new(),
+            inner: HashMap::new(),
             path_item_cache_mapping: HashMap::new(),
         }
     }
@@ -168,7 +170,7 @@ impl<HF: HostFunctions> ProofBatchVerifier<HF> {
             .iter()
             .rev()
             .fold(
-                ((vec![], vec![]), 0, 0, 0),
+                ((Vec::new(), Vec::new()), 0, 0, 0),
                 |(
                     (mut node_coordinates_given, mut node_coordinates_to_calculate),
                     mut depth,
@@ -297,14 +299,16 @@ mod tests {
 
     #[test]
     fn test_get_nodes_to_be_calculated() {
-        let cases = vec![
+        let cases = [
             (
-                vec![MerklePathItem {
+                [MerklePathItem {
                     direction: Direction::Left,
                     hash: CryptoHash::default(),
-                }],
+                }]
+                .into_iter()
+                .collect(),
                 (ExpectedResult {
-                    node_coordinates_given: vec![
+                    node_coordinates_given: [
                         NodeCoordinates {
                             index: 0,
                             level: 1,
@@ -315,16 +319,20 @@ mod tests {
                             level: 1,
                             hash: Some(CryptoHash::default()),
                         },
-                    ],
-                    node_coordinates_to_calculate: vec![NodeCoordinates {
+                    ]
+                    .into_iter()
+                    .collect(),
+                    node_coordinates_to_calculate: [NodeCoordinates {
                         index: 0,
                         level: 0,
                         hash: None,
-                    }],
+                    }]
+                    .into_iter()
+                    .collect(),
                 }),
             ),
             (
-                vec![
+                [
                     MerklePathItem {
                         direction: Direction::Right,
                         hash: CryptoHash::default(),
@@ -338,7 +346,7 @@ mod tests {
                 .rev()
                 .collect(),
                 (ExpectedResult {
-                    node_coordinates_given: vec![
+                    node_coordinates_given: [
                         NodeCoordinates {
                             index: 1,
                             level: 1,
@@ -354,8 +362,10 @@ mod tests {
                             level: 2,
                             hash: Some(CryptoHash::default()),
                         },
-                    ],
-                    node_coordinates_to_calculate: vec![
+                    ]
+                    .into_iter()
+                    .collect(),
+                    node_coordinates_to_calculate: [
                         NodeCoordinates {
                             index: 0,
                             level: 0,
@@ -366,11 +376,13 @@ mod tests {
                             level: 1,
                             hash: None,
                         },
-                    ],
+                    ]
+                    .into_iter()
+                    .collect(),
                 }),
             ),
             (
-                vec![
+                [
                     MerklePathItem {
                         direction: Direction::Right,
                         hash: CryptoHash::default(),
@@ -382,9 +394,9 @@ mod tests {
                 ]
                 .into_iter()
                 .rev()
-                .collect(),
+                .collect::<Vec<_>>(),
                 (ExpectedResult {
-                    node_coordinates_given: vec![
+                    node_coordinates_given: [
                         NodeCoordinates {
                             index: 1,
                             level: 1,
@@ -400,8 +412,10 @@ mod tests {
                             level: 2,
                             hash: Some(CryptoHash::default()),
                         },
-                    ],
-                    node_coordinates_to_calculate: vec![
+                    ]
+                    .into_iter()
+                    .collect(),
+                    node_coordinates_to_calculate: [
                         NodeCoordinates {
                             index: 0,
                             level: 0,
@@ -412,11 +426,13 @@ mod tests {
                             level: 1,
                             hash: None,
                         },
-                    ],
+                    ]
+                    .into_iter()
+                    .collect(),
                 }),
             ),
             (
-                vec![
+                [
                     MerklePathItem {
                         direction: Direction::Left,
                         hash: CryptoHash::default(),
@@ -430,7 +446,7 @@ mod tests {
                 .rev()
                 .collect(),
                 (ExpectedResult {
-                    node_coordinates_given: vec![
+                    node_coordinates_given: [
                         NodeCoordinates {
                             index: 0,
                             level: 1,
@@ -446,8 +462,10 @@ mod tests {
                             level: 2,
                             hash: Some(CryptoHash::default()),
                         },
-                    ],
-                    node_coordinates_to_calculate: vec![
+                    ]
+                    .into_iter()
+                    .collect(),
+                    node_coordinates_to_calculate: [
                         NodeCoordinates {
                             index: 0,
                             level: 0,
@@ -458,11 +476,13 @@ mod tests {
                             level: 1,
                             hash: None,
                         },
-                    ],
+                    ]
+                    .into_iter()
+                    .collect(),
                 }),
             ),
             (
-                vec![
+                [
                     MerklePathItem {
                         direction: Direction::Left,
                         hash: CryptoHash::default(),
@@ -478,9 +498,9 @@ mod tests {
                 ]
                 .into_iter()
                 .rev()
-                .collect(),
+                .collect::<Vec<_>>(),
                 (ExpectedResult {
-                    node_coordinates_given: vec![
+                    node_coordinates_given: [
                         NodeCoordinates {
                             index: 0,
                             level: 1,
@@ -501,8 +521,10 @@ mod tests {
                             level: 3,
                             hash: Some(CryptoHash::default()),
                         },
-                    ],
-                    node_coordinates_to_calculate: vec![
+                    ]
+                    .into_iter()
+                    .collect(),
+                    node_coordinates_to_calculate: [
                         NodeCoordinates {
                             index: 0,
                             level: 0,
@@ -518,11 +540,13 @@ mod tests {
                             level: 2,
                             hash: None,
                         },
-                    ],
+                    ]
+                    .into_iter()
+                    .collect(),
                 }),
             ),
             (
-                vec![
+                [
                     MerklePathItem {
                         direction: Direction::Right,
                         hash: CryptoHash::default(),
@@ -538,9 +562,9 @@ mod tests {
                 ]
                 .into_iter()
                 .rev()
-                .collect(),
+                .collect::<Vec<_>>(),
                 (ExpectedResult {
-                    node_coordinates_given: vec![
+                    node_coordinates_given: [
                         NodeCoordinates {
                             index: 1,
                             level: 1,
@@ -561,8 +585,10 @@ mod tests {
                             level: 3,
                             hash: Some(CryptoHash::default()),
                         },
-                    ],
-                    node_coordinates_to_calculate: vec![
+                    ]
+                    .into_iter()
+                    .collect(),
+                    node_coordinates_to_calculate: [
                         NodeCoordinates {
                             index: 0,
                             level: 0,
@@ -578,11 +604,13 @@ mod tests {
                             level: 2,
                             hash: None,
                         },
-                    ],
+                    ]
+                    .into_iter()
+                    .collect(),
                 }),
             ),
             (
-                vec![
+                [
                     MerklePathItem {
                         direction: Direction::Right,
                         hash: CryptoHash::default(),
@@ -598,9 +626,9 @@ mod tests {
                 ]
                 .into_iter()
                 .rev()
-                .collect(),
+                .collect::<Vec<_>>(),
                 (ExpectedResult {
-                    node_coordinates_given: vec![
+                    node_coordinates_given: [
                         NodeCoordinates {
                             index: 1,
                             level: 1,
@@ -621,8 +649,10 @@ mod tests {
                             level: 3,
                             hash: Some(CryptoHash::default()),
                         },
-                    ],
-                    node_coordinates_to_calculate: vec![
+                    ]
+                    .into_iter()
+                    .collect(),
+                    node_coordinates_to_calculate: [
                         NodeCoordinates {
                             index: 0,
                             level: 0,
@@ -638,10 +668,14 @@ mod tests {
                             level: 2,
                             hash: None,
                         },
-                    ],
+                    ]
+                    .into_iter()
+                    .collect(),
                 }),
             ),
-        ];
+        ]
+        .into_iter()
+        .collect::<Vec<_>>();
 
         let verifier = ProofBatchVerifier::<MockedHostFunctions>::new();
         for (ref mp, expected_result) in cases {

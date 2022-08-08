@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 borsh = {version = "0.9.3", default_features = false }
 near-primitives = "0.14.0"
+no-std-compat = {version = "0.4.1", features = [ "alloc", "compat_hash" ] }
 
 [dev-dependencies]
 sha2 = "0.10.2"
